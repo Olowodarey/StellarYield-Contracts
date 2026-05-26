@@ -61,8 +61,10 @@ pub fn emit_wasm_hash_updated(
     new_hash: BytesN<32>,
     updated_by: Address,
 ) {
-    e.events()
-        .publish((symbol_short!("wasm_upd"), updated_by), (old_hash, new_hash));
+    e.events().publish(
+        (symbol_short!("wasm_upd"), updated_by),
+        (old_hash, new_hash),
+    );
 }
 
 /// Emitted when the admin grants a role to an address.

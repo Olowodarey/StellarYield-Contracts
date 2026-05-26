@@ -1,5 +1,4 @@
 # Workspace root for Soroban contracts (run `cargo test -p vault_factory` from here).
-# Auto-merge test — safe to delete.
 [workspace]
 resolver = "2"
 members = [
