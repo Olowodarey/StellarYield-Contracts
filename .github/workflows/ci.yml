@@ -174,19 +174,9 @@ jobs:
     needs: [sdk, fmt, clippy, test, build]
     if: always()
     steps:
-      - name: Check all jobs succeeded
-        run: |
-          if [[ "${{ needs.sdk.result }}" != "success" ||
-                "${{ needs.fmt.result }}" != "success" ||
-                "${{ needs.clippy.result }}" != "success" ||
-                "${{ needs.test.result }}" != "success" ||
-                "${{ needs.build.result }}" != "success" ]]; then
-            echo "One or more required checks failed:"
-            echo "  sdk:     ${{ needs.sdk.result }}"
-            echo "  fmt:     ${{ needs.fmt.result }}"
-            echo "  clippy:  ${{ needs.clippy.result }}"
-            echo "  test:    ${{ needs.test.result }}"
-            echo "  build:   ${{ needs.build.result }}"
-            exit 1
-          fi
-          echo "All checks passed."
+      - name: All checks passed
+        if: ${{ needs.sdk.result == 'success' && needs.fmt.result == 'success' && needs.clippy.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' }}
+        run: echo "All checks passed"
+      - name: Some checks failed
+        if: ${{ needs.sdk.result != 'success' || needs.fmt.result != 'success' || needs.clippy.result != 'success' || needs.test.result != 'success' || needs.build.result != 'success' }}
+        run: exit 1
