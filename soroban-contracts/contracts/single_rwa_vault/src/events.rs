@@ -95,7 +95,7 @@ pub fn emit_emergency_action(e: &Env, paused: bool, reason: String) {
 ///
 /// Includes an actor role hint (`admin` or `operator`) to reduce off-chain chain reads.
 pub fn emit_emergency_action_v2(e: &Env, paused: bool, reason: String, is_admin_actor: bool) {
-    let actor_role: Symbol = if is_admin_actor {
+    let actor_role = if is_admin_actor {
         symbol_short!("admin")
     } else {
         symbol_short!("operator")
