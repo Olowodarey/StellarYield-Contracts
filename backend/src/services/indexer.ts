@@ -9,6 +9,22 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function getEventTopics(rawEvent: any): unknown[] | null {
+  const topics = rawEvent?.topic ?? rawEvent?.topics;
+  return Array.isArray(topics) ? topics : null;
+}
+
+function getEventData(rawEvent: any): unknown | null {
+  return rawEvent?.value ?? rawEvent?.data ?? null;
+}
+
+function parseRawEventName(rawEvent: any): { topics: unknown[]; data: unknown } | null {
+  const topics = getEventTopics(rawEvent);
+  const data = getEventData(rawEvent);
+  if (!topics || data === null) return null;
+  return { topics, data };
+}
+
 async function withBackoff<T>(
   fn: () => Promise<T>,
   retries = 5,
@@ -58,34 +74,36 @@ export class Indexer {
   async start(): Promise<void> {
     this.running = true;
 
-    const rows = await query<{ last_ledger: number }>(
-      "SELECT last_ledger FROM indexer_state ORDER BY id DESC LIMIT 1",
-    );
-    if (rows.length > 0) {
-      this.lastLedger = rows[0].last_ledger;
-    }
+    try {
+      this.lastLedger = await this.getLastIndexedLedger();
+      logger.info({ ledger: this.lastLedger }, `resuming from ledger ${this.lastLedger}`);
 
-    // If no contract ID is configured, skip event polling (#449)
-    if (!this.vaultFactoryContractId) {
-      logger.info("Indexer started in state-only mode (no contract ID configured)");
-      while (this.running) {
-        await this.tickStateOnly();
-        await wait(config.indexer.pollIntervalMs);
+      // If no contract ID is configured, keep the indexer alive and advance state only.
+      if (!this.vaultFactoryContractId) {
+        logger.info("Indexer started in state-only mode (no contract ID configured)");
+        while (this.running) {
+          await this.tickStateOnly();
+          await this.sleepWhileRunning(config.indexer.pollIntervalMs);
+        }
+        return;
       }
-      return;
-    }
 
-    const server = getSorobanRpc();
-    const { sequence: tipLedger } = await server.getLatestLedger();
-    const gap = tipLedger - this.lastLedger;
+      const server = getSorobanRpc();
+      const { sequence: tipLedger } = await withBackoff(() => server.getLatestLedger());
+      const gap = tipLedger - this.lastLedger;
 
-    if (gap > config.indexer.batchSize) {
-      await this.backfill(tipLedger);
-    }
+      if (gap > config.indexer.batchSize) {
+        await this.backfill(tipLedger);
+      }
 
-    while (this.running) {
-      await this.tick();
-      await wait(config.indexer.pollIntervalMs);
+      while (this.running) {
+        await this.tick();
+        await this.sleepWhileRunning(config.indexer.pollIntervalMs);
+      }
+    } catch (err) {
+      logger.error({ err }, "Indexer failed to start");
+    } finally {
+      this.running = false;
     }
   }
 
@@ -109,14 +127,20 @@ export class Indexer {
       return;
     }
 
-    if (latestLedger <= this.lastLedger) return;
+    if (latestLedger <= this.lastLedger) {
+      logger.info(
+        { latestLedger, lastLedger: this.lastLedger },
+        "no events",
+      );
+      return;
+    }
 
     this.lastLedger = latestLedger;
-    await this.persistLastLedger();
+    await this.saveLastIndexedLedger(latestLedger);
 
-    logger.debug(
+    logger.info(
       { ledger: latestLedger },
-      "State-only tick complete (no events fetched)",
+      "no events",
     );
   }
 
@@ -231,9 +255,15 @@ export class Indexer {
       return;
     }
 
+    const vaultStateChanged = parseVaultStateChangedEvent(event);
+    if (vaultStateChanged) {
+      await this.recordEvent(event, "vault_state_changed");
+      return;
+    }
+
     const vaultCreated = parseVaultCreatedEvent(event);
     if (vaultCreated) {
-      await this.handleVaultCreated(vaultCreated);
+      await this.handleVaultCreated(event.contractId ?? "", vaultCreated);
       await this.recordEvent(event, "vault_created");
       return;
     }
@@ -257,18 +287,20 @@ export class Indexer {
   }
 
   private async handleVaultCreated(
-    vaultCreated: { factoryId: string; vault: string; vaultType: string; name: string; creator: string },
+    factoryId: string,
+    vaultCreated: { contractId: string; asset: string; name: string; symbol: string },
   ): Promise<void> {
     logger.info(
-      { vault: vaultCreated.vault, factoryId: vaultCreated.factoryId, name: vaultCreated.name },
+      { vault: vaultCreated.contractId, factoryId, name: vaultCreated.name },
       "Processing vault_created event",
     );
 
     await this.vaultService.upsertVault({
-      contractId: vaultCreated.vault,
-      factoryId: vaultCreated.factoryId,
+      contractId: vaultCreated.contractId,
+      factoryId,
       name: vaultCreated.name,
-      asset: "", // Asset will be populated later when vault details are fetched
+      asset: vaultCreated.asset,
+      symbol: vaultCreated.symbol || null,
       state: "Funding",
     });
   }
@@ -289,11 +321,31 @@ export class Indexer {
   }
 
   private async persistLastLedger(): Promise<void> {
-    await query(
-      `INSERT INTO indexer_state (last_ledger, updated_at) VALUES ($1, NOW())
-       ON CONFLICT (id) DO UPDATE SET last_ledger = $1, updated_at = NOW()`,
-      [this.lastLedger],
+    await this.saveLastIndexedLedger(this.lastLedger);
+  }
+
+  async getLastIndexedLedger(): Promise<number> {
+    const rows = await query<{ last_ledger: number }>(
+      "SELECT last_ledger FROM indexer_state LIMIT 1",
     );
+    return rows[0]?.last_ledger ?? config.indexer.startLedger;
+  }
+
+  async saveLastIndexedLedger(ledger: number): Promise<void> {
+    await query(
+      "UPDATE indexer_state SET last_ledger = $1",
+      [ledger],
+    );
+  }
+
+  private async sleepWhileRunning(ms: number): Promise<void> {
+    const stepMs = 250;
+    let remaining = ms;
+    while (this.running && remaining > 0) {
+      const delayMs = Math.min(stepMs, remaining);
+      await wait(delayMs);
+      remaining -= delayMs;
+    }
   }
 }
 
@@ -333,6 +385,40 @@ export function parseDepositEvent(rawEvent: any): {
     const shares = BigInt(Array.isArray(data) ? data[1] : (data?.shares ?? 0));
 
     return { caller, receiver, assets, shares };
+  } catch {
+    return null;
+  }
+}
+
+export function parseVaultStateChangedEvent(rawEvent: any): {
+  oldState: string;
+  newState: string;
+} | null {
+  try {
+    const parsed = parseRawEventName(rawEvent);
+    if (!parsed) return null;
+
+    const { topics, data } = parsed;
+    let eventName = "";
+    try {
+      const firstTopic = typeof topics[0] === "string"
+        ? xdr.ScVal.fromXDR(topics[0], "base64")
+        : (topics[0] as any);
+      eventName = scValToNative(firstTopic as any);
+    } catch {
+      return null;
+    }
+
+    if (eventName !== "st_chg" && eventName !== "vault_state_changed") return null;
+
+    const parsedValue = typeof data === "string"
+      ? xdr.ScVal.fromXDR(data, "base64")
+      : data;
+    const native = scValToNative(parsedValue as any) as any;
+    const oldState = String(native?.oldState ?? (Array.isArray(native) ? native[0] : ""));
+    const newState = String(native?.newState ?? (Array.isArray(native) ? native[1] : ""));
+
+    return { oldState, newState };
   } catch {
     return null;
   }
@@ -378,24 +464,23 @@ export function parseYieldDistributedEvent(rawEvent: any): {
 }
 
 export function parseVaultCreatedEvent(rawEvent: any): {
-  factoryId: string;
-  vault: string;
-  vaultType: string;
+  contractId: string;
+  asset: string;
   name: string;
-  creator: string;
+  symbol: string;
 } | null {
   try {
-    const topics = rawEvent?.topic || rawEvent?.topics;
-    const value = rawEvent?.value || rawEvent?.data;
+    const parsed = parseRawEventName(rawEvent);
+    if (!parsed) return null;
 
-    if (!topics || topics.length < 2 || !value) return null;
+    const { topics, data } = parsed;
 
     const parsedTopics = topics.map((t: any) =>
-      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : t
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : t,
     );
-    const parsedValue = typeof value === "string"
-      ? xdr.ScVal.fromXDR(value, "base64")
-      : value;
+    const parsedValue = typeof data === "string"
+      ? xdr.ScVal.fromXDR(data, "base64")
+      : data;
 
     let eventName = "";
     try {
@@ -404,19 +489,15 @@ export function parseVaultCreatedEvent(rawEvent: any): {
       return null;
     }
 
-    if (eventName !== "v_create") return null;
+    if (eventName !== "v_create" && eventName !== "vault_created") return null;
 
-    const vault = scValToNative(parsedTopics[1]) as string;
+    const contractId = String(parsedTopics[1] ?? rawEvent?.contractId ?? "");
+    const nativeData = scValToNative(parsedValue as any) as any;
+    const asset = String(nativeData?.asset ?? (Array.isArray(nativeData) ? nativeData[0] : "") ?? "");
+    const name = String(nativeData?.name ?? (Array.isArray(nativeData) ? nativeData[1] : "") ?? "");
+    const symbol = String(nativeData?.symbol ?? (Array.isArray(nativeData) ? nativeData[2] : "") ?? "");
 
-    const data = scValToNative(parsedValue) as any;
-    const vaultType = String(Array.isArray(data) ? data[0] : (data?.vaultType ?? ""));
-    const name = String(Array.isArray(data) ? data[1] : (data?.name ?? ""));
-    const creator = String(Array.isArray(data) ? data[2] : (data?.creator ?? ""));
-
-    // The factory contract ID is the contractId field of the event
-    const factoryId = rawEvent.contractId ?? "";
-
-    return { factoryId, vault, vaultType, name, creator };
+    return { contractId, asset, name, symbol };
   } catch (error) {
     logger.warn({ error }, "Error parsing vault_created event");
     return null;
