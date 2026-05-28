@@ -28,3 +28,12 @@ export async function getUserPendingYield(req: Request, res: Response, next: Nex
     next(err);
   }
 }
+
+export async function getYieldSummary(req: Request, res: Response, next: NextFunction) {
+  try {
+    const summary = await yieldService.getYieldSummary(String(req.params["contractId"]));
+    res.json(summary);
+  } catch (err) {
+    next(err);
+  }
+}
