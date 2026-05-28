@@ -30,3 +30,13 @@ export async function getUserPortfolio(
     next(err);
   }
 }
+
+export async function searchUsers(req: Request, res: Response, next: NextFunction) {
+  try {
+    const search = String(req.query["search"] ?? "");
+    const users = await userService.searchUsers(search);
+    res.json(users);
+  } catch (err) {
+    next(err);
+  }
+}
