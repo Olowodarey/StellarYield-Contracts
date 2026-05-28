@@ -5,6 +5,7 @@ import { healthRouter } from "./api/routes/health.js";
 import { vaultsRouter } from "./api/routes/vaults.js";
 import { usersRouter } from "./api/routes/users.js";
 import { yieldsRouter } from "./api/routes/yields.js";
+import { adminRouter } from "./api/routes/admin.js";
 import { errorHandler } from "./api/middleware/errors.js";
 
 export function createApp(): Express {
@@ -22,6 +23,7 @@ export function createApp(): Express {
   app.use("/api/v1/vaults", vaultsRouter);
   app.use("/api/v1/users", usersRouter);
   app.use("/api/v1/yields", yieldsRouter);
+  app.use("/api/v1/admin", adminRouter);
 
   app.use(errorHandler);
 

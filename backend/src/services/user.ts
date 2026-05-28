@@ -61,11 +61,9 @@ export class UserService {
       [address],
     );
 
-    // Transform to camelCase and compute total deposited
     let totalDeposited = "0";
     const transformedPositions: UserVaultPosition[] = positions.map((row) => {
       const deposited = row.deposited || "0";
-      // Add to total (simple string addition for numeric values)
       totalDeposited = (BigInt(totalDeposited) + BigInt(deposited)).toString();
 
       return {
@@ -83,5 +81,34 @@ export class UserService {
       positions: transformedPositions,
       totalDeposited,
     };
+  }
+
+  async searchUsers(search: string): Promise<User[]> {
+    const result = await query<{
+      id: number;
+      address: string;
+      kyc_verified: boolean;
+      created_at: Date;
+      updated_at: Date;
+    }>(
+      `SELECT id, address, kyc_verified, created_at, updated_at 
+       FROM users 
+       WHERE address ILIKE $1 
+       LIMIT 20`,
+      [`%${search}%`],
+    );
+
+    return result.map((row) => ({
+      id: row.id,
+      address: row.address,
+      kycVerified: row.kyc_verified,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  async countUsers(): Promise<number> {
+    const result = await query<{ count: string }>("SELECT COUNT(*) as count FROM users");
+    return parseInt(result[0]?.count ?? "0", 10);
   }
 }
