@@ -6,12 +6,16 @@ interface ListVaultsOptions {
   page: number;
   pageSize: number;
   state?: string;
+  sort: "created_at" | "total_assets";
+  order: "asc" | "desc";
 }
 
 export class VaultService {
   async listVaults(opts: ListVaultsOptions): Promise<PaginatedResponse<Vault>> {
-    const { page, pageSize, state } = opts;
+    const { page, pageSize, state, sort, order } = opts;
     const offset = (page - 1) * pageSize;
+    const sortColumn = sort === "total_assets" ? "total_assets" : "created_at";
+    const sortDirection = order === "asc" ? "ASC" : "DESC";
 
     // Build WHERE clause if state filter is provided
     const whereClause = state ? "WHERE state = $3" : "";
@@ -36,7 +40,7 @@ export class VaultService {
               total_assets, total_supply, created_at, updated_at
        FROM vaults
        ${whereClause}
-       ORDER BY created_at DESC
+       ORDER BY ${sortColumn} ${sortDirection}
        LIMIT $1 OFFSET $2`,
       params,
     );
@@ -206,13 +210,9 @@ export class VaultService {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
        ON CONFLICT (contract_id)
        DO UPDATE SET
-         factory_id = COALESCE(EXCLUDED.factory_id, vaults.factory_id),
-         asset = COALESCE(EXCLUDED.asset, vaults.asset),
-         name = COALESCE(EXCLUDED.name, vaults.name),
-         symbol = COALESCE(EXCLUDED.symbol, vaults.symbol),
-         state = COALESCE(EXCLUDED.state, vaults.state),
-         total_assets = COALESCE(EXCLUDED.total_assets, vaults.total_assets),
-         total_supply = COALESCE(EXCLUDED.total_supply, vaults.total_supply),
+         state = EXCLUDED.state,
+         total_assets = EXCLUDED.total_assets,
+         total_supply = EXCLUDED.total_supply,
          updated_at = NOW()`,
       [contractId, factoryId, asset, name, symbol, state, totalAssets, totalSupply],
     );

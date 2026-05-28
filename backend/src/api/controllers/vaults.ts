@@ -9,10 +9,20 @@ function setCacheHeaders(res: Response): void {
 
 export async function listVaults(req: Request, res: Response, next: NextFunction) {
   try {
-    const page = parseInt(String(req.query["page"] ?? "1"), 10);
-    const pageSize = parseInt(String(req.query["pageSize"] ?? "20"), 10);
-    const state = req.query["state"] as string | undefined;
-    const result = await vaultService.listVaults({ page, pageSize, state });
+    const {
+      page,
+      pageSize,
+      state,
+      sort,
+      order,
+    } = req.query as unknown as {
+      page: number;
+      pageSize: number;
+      state?: string;
+      sort: "created_at" | "total_assets";
+      order: "asc" | "desc";
+    };
+    const result = await vaultService.listVaults({ page, pageSize, state, sort, order });
     setCacheHeaders(res);
     res.json(result);
   } catch (err) {
