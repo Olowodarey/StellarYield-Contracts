@@ -9,7 +9,7 @@ vi.mock("./vault.js", () => ({ VaultService: vi.fn().mockImplementation(() => ({
 vi.mock("./notifications.js", () => ({ NotificationService: vi.fn().mockImplementation(() => ({})) }));
 
 import { rpc, xdr, nativeToScVal } from "@stellar/stellar-sdk";
-import { Indexer, parseDepositEvent, parseYieldDistributedEvent, parseCancelFundingEvent } from "./indexer.js";
+import { Indexer, parseDepositEvent, parseYieldDistributedEvent, parseCancelFundingEvent, parseEarlyRedemptionProcessedEvent, parseEarlyRedemptionCancelledEvent } from "./indexer.js";
 import { getSorobanRpc } from "./stellar.js";
 
 const VAULT_CONTRACT = "CDLZFC3SYJYHZDQA6M57EYUC2XBDA6LQF3M6KFRDZ7TXJYJL2K3B";
@@ -289,4 +289,173 @@ describe("Indexer tick", () => {
     expect(parseCancelFundingEvent(event2)).not.toBeNull();
   });
 
+  describe("parseEarlyRedemptionProcessedEvent", () => {
+    it("parses a valid early_redemption_processed event", () => {
+      const data = xdr.ScVal.scvVec([
+        xdr.ScVal.scvU32(42),
+        xdr.ScVal.scvI128(new xdr.Int128Parts({
+          lo: xdr.Uint64.fromString("5000"),
+          hi: xdr.Uint64.fromString("0"),
+        })),
+      ]);
+      const accountId = Buffer.alloc(32, 42);
+      const pubKey = new xdr.PublicKey.publicKeyTypeEd25519(accountId);
+      const scAddress = new xdr.ScAddress(xdr.ScAddressType.scAddressTypeAccount(), pubKey);
+      const topics = [
+        xdr.ScVal.scvSymbol("erq_done"),
+        xdr.ScVal.scvAddress(scAddress),
+      ];
+      const event = { topics, value: data };
+
+      const result = parseEarlyRedemptionProcessedEvent(event);
+      expect(result).not.toBeNull();
+      expect(result?.requestId).toBe(42);
+      expect(result?.netAssets).toBe(5000n);
+      expect(result?.user).toBeDefined();
+    });
+
+    it("returns null for non-matching event name", () => {
+      const topics = [xdr.ScVal.scvSymbol("deposit")];
+      const event = { topics, value: xdr.ScVal.scvVoid() };
+      expect(parseEarlyRedemptionProcessedEvent(event)).toBeNull();
+    });
+
+    it("returns null for malformed input", () => {
+      expect(parseEarlyRedemptionProcessedEvent(null)).toBeNull();
+      expect(parseEarlyRedemptionProcessedEvent({})).toBeNull();
+    });
+  });
+
+  describe("parseEarlyRedemptionCancelledEvent", () => {
+    function makeScAddress(seed: number): xdr.ScVal {
+      const accountId = Buffer.alloc(32, seed);
+      const pubKey = new xdr.PublicKey.publicKeyTypeEd25519(accountId);
+      const scAddress = new xdr.ScAddress(xdr.ScAddressType.scAddressTypeAccount(), pubKey);
+      return xdr.ScVal.scvAddress(scAddress);
+    }
+
+    it("parses a valid early_redemption_cancelled event (erq_can)", () => {
+      const data = xdr.ScVal.scvVec([
+        xdr.ScVal.scvU32(7),
+        xdr.ScVal.scvI128(new xdr.Int128Parts({
+          lo: xdr.Uint64.fromString("3000"),
+          hi: xdr.Uint64.fromString("0"),
+        })),
+      ]);
+      const topics = [
+        xdr.ScVal.scvSymbol("erq_can"),
+        makeScAddress(99),
+      ];
+      const event = { topics, value: data };
+
+      const result = parseEarlyRedemptionCancelledEvent(event);
+      expect(result).not.toBeNull();
+      expect(result?.requestId).toBe(7);
+      expect(result?.shares).toBe(3000n);
+      expect(result?.user).toBeDefined();
+    });
+
+    it("parses a v2 cancelled event (erq_can2)", () => {
+      const data = xdr.ScVal.scvVec([
+        xdr.ScVal.scvU32(10),
+        xdr.ScVal.scvI128(new xdr.Int128Parts({
+          lo: xdr.Uint64.fromString("1000"),
+          hi: xdr.Uint64.fromString("0"),
+        })),
+        xdr.ScVal.scvU32(1),
+      ]);
+      const topics = [
+        xdr.ScVal.scvSymbol("erq_can2"),
+        makeScAddress(55),
+      ];
+      const event = { topics, value: data };
+
+      const result = parseEarlyRedemptionCancelledEvent(event);
+      expect(result).not.toBeNull();
+      expect(result?.requestId).toBe(10);
+      expect(result?.shares).toBe(1000n);
+    });
+
+    it("returns null for non-matching event name", () => {
+      const topics = [xdr.ScVal.scvSymbol("withdraw")];
+      const event = { topics, value: xdr.ScVal.scvVoid() };
+      expect(parseEarlyRedemptionCancelledEvent(event)).toBeNull();
+    });
+
+    it("returns null for malformed input", () => {
+      expect(parseEarlyRedemptionCancelledEvent(null)).toBeNull();
+      expect(parseEarlyRedemptionCancelledEvent({})).toBeNull();
+    });
+  });
+
+});
+
+// ── Issue #569: yield_claimed parsers ──────────────────────────────────────────
+
+import {
+  parseYieldClaimedEvent,
+  parseYieldClaimedPartialEvent,
+  parseEarlyRedemptionRequestedEvent,
+} from "./indexer.js";
+
+describe("parseYieldClaimedEvent", () => {
+  it("parses a valid yield_clm event", () => {
+    const topics = [nativeToScVal("yield_clm"), nativeToScVal(ACCOUNT)];
+    const data = nativeToScVal([5000n, 3]);
+    const result = parseYieldClaimedEvent({ topics, data });
+    expect(result).not.toBeNull();
+    expect(result?.user).toBe(ACCOUNT);
+    expect(result?.amount).toBe(5000n);
+    expect(result?.epoch).toBe(3);
+  });
+
+  it("returns null for malformed events", () => {
+    expect(parseYieldClaimedEvent(null)).toBeNull();
+    expect(parseYieldClaimedEvent({})).toBeNull();
+    expect(parseYieldClaimedEvent({ topics: [nativeToScVal("wrong")], data: nativeToScVal([]) })).toBeNull();
+  });
+});
+
+describe("parseYieldClaimedPartialEvent", () => {
+  it("parses a valid prt_yld event", () => {
+    const topics = [nativeToScVal("prt_yld"), nativeToScVal(ACCOUNT)];
+    const data = nativeToScVal([3000n, 500n, 7]);
+    const result = parseYieldClaimedPartialEvent({ topics, data });
+    expect(result).not.toBeNull();
+    expect(result?.user).toBe(ACCOUNT);
+    expect(result?.claimed).toBe(3000n);
+    expect(result?.shortfall).toBe(500n);
+    expect(result?.epoch).toBe(7);
+  });
+
+  it("returns null for malformed events", () => {
+    expect(parseYieldClaimedPartialEvent(null)).toBeNull();
+    expect(parseYieldClaimedPartialEvent({})).toBeNull();
+  });
+});
+
+// ── Issue #571: parseEarlyRedemptionRequestedEvent ────────────────────────────
+
+describe("parseEarlyRedemptionRequestedEvent", () => {
+  it("parses a valid erq_req event", () => {
+    const topics = [nativeToScVal("erq_req"), nativeToScVal(ACCOUNT)];
+    const data = nativeToScVal([42, 10000n, 2]);
+    const result = parseEarlyRedemptionRequestedEvent({ topics, data });
+    expect(result).not.toBeNull();
+    expect(result?.user).toBe(ACCOUNT);
+    expect(result?.requestId).toBe(42);
+    expect(result?.shares).toBe(10000n);
+    expect(result?.queuePosition).toBe(2);
+  });
+
+  it("returns null for unrecognised topic", () => {
+    const topics = [nativeToScVal("unknown_event"), nativeToScVal(ACCOUNT)];
+    const data = nativeToScVal([1, 100n, 1]);
+    expect(parseEarlyRedemptionRequestedEvent({ topics, data })).toBeNull();
+  });
+
+  it("returns null for malformed events", () => {
+    expect(parseEarlyRedemptionRequestedEvent(null)).toBeNull();
+    expect(parseEarlyRedemptionRequestedEvent({})).toBeNull();
+  });
 });
