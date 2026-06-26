@@ -424,17 +424,6 @@ export async function exportVaultHoldersCsv(req: Request, res: Response, next: N
 }
 
 /**
- * GET /api/v1/vaults/:contractId/compound-projection?shares=<amount>&epochs=<n>
- *
- * Returns a compounded yield projection assuming reinvestment of yield.
- * Query params:
- *   - shares: number of shares (required, must be positive)
- *   - epochs: number of epochs to project (required, must be positive)
- *
- * Response: { projectedValue: string; compoundedYield: string; epochsProjected: number }
- * Returns 400 if shares or epochs are non-positive, 404 if vault has no epochs.
- */
-/**
  * GET /api/v1/vaults/:contractId/report?year=2025
  *
  * Returns a year-over-year summary of a vault's performance for tax and
@@ -580,22 +569,22 @@ export async function getEpochBreakdown(req: Request, res: Response, next: NextF
 
     const { vault_id: vaultId, yield_amount: yieldAmount, total_shares: totalShares } = epochRows[0];
 
-    // Get holders from user_vault_positions with their shares at this point
+    // Use share_balance_snapshots for accurate per-epoch holder balances
     const countRows = await query<{ count: string }>(
       `SELECT COUNT(*)::text AS count
-       FROM user_vault_positions
-       WHERE vault_id = $1 AND shares > 0`,
-      [vaultId],
+       FROM share_balance_snapshots
+       WHERE vault_id = $1 AND epoch = $2 AND shares > 0`,
+      [vaultId, epochNum],
     );
     const total = parseInt(countRows[0]?.count ?? "0", 10);
 
     const holderRows = await query<{ user_address: string; shares: string }>(
       `SELECT user_address, shares::text
-       FROM user_vault_positions
-       WHERE vault_id = $1 AND shares > 0
+       FROM share_balance_snapshots
+       WHERE vault_id = $1 AND epoch = $2 AND shares > 0
        ORDER BY shares DESC
-       LIMIT $2 OFFSET $3`,
-      [vaultId, pageSize, offset],
+       LIMIT $3 OFFSET $4`,
+      [vaultId, epochNum, pageSize, offset],
     );
 
     const yieldBig = BigInt(Math.round(parseFloat(yieldAmount)));
