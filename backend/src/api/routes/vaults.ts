@@ -18,6 +18,8 @@ import {
   getEarlyRedemptionFee,
   exportVaultCsv,
   getCompoundProjection,
+  getVaultOperators,
+  getVaultRoles,
 } from "../controllers/vaults.js";
 import { validateParams, validateQuery } from "../middleware/validate.js";
 import { requireApiKey } from "../middleware/auth.js";
@@ -87,3 +89,7 @@ vaultsRouter.get(
 );
 // Export vault data as CSV: GET /api/v1/vaults/:contractId/export.csv
 vaultsRouter.get("/:contractId/export.csv", validateParams(vaultParamsSchema), exportVaultCsv);
+// Get vault operators: GET /api/v1/vaults/:contractId/operators
+vaultsRouter.get("/:contractId/operators", validateParams(vaultParamsSchema), getVaultOperators);
+// Get vault roles: GET /api/v1/vaults/:contractId/roles
+vaultsRouter.get("/:contractId/roles", validateParams(vaultParamsSchema), getVaultRoles);
