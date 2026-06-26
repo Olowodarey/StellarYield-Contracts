@@ -4,6 +4,7 @@ import { logger } from "../logger.js";
 import { query } from "../db/index.js";
 import { getSorobanRpc } from "./stellar.js";
 import { VaultService } from "./vault.js";
+import { UserService } from "./user.js";
 import { NotificationService } from "./notifications.js";
 import { indexerEventsProcessedTotal, indexerLastLedger } from "./metrics.js";
 
@@ -115,12 +116,14 @@ export class Indexer {
   private lastTickAt: Date | null = null;
   private readonly vaultFactoryContractId: string;
   private vaultService: VaultService;
+  private userService: UserService;
   private notificationService?: NotificationService;
 
   constructor(notificationService?: NotificationService) {
     this.lastLedger = config.indexer.startLedger;
     this.vaultFactoryContractId = config.stellar.vaultFactoryContractId;
     this.vaultService = new VaultService();
+    this.userService = new UserService();
     this.notificationService = notificationService;
 
     if (!this.vaultFactoryContractId) {
@@ -420,6 +423,44 @@ export class Indexer {
       await this.recordEvent(event, "early_redemption_cancelled");
       return;
     }
+
+    const opAdded = parseOpAddEvent(event);
+    if (opAdded) {
+      await this.handleOperatorAdded(event.contractId ?? "", opAdded);
+      await this.recordEvent(event, "op_add");
+      return;
+    }
+
+    const opRemoved = parseOpRemEvent(event);
+    if (opRemoved) {
+      await this.handleOperatorRemoved(event.contractId ?? "", opRemoved);
+      await this.recordEvent(event, "op_rem");
+      return;
+    }
+
+    const zkmeUpd = parseZkmeVerifierUpdatedEvent(event);
+    if (zkmeUpd) {
+      await this.handleZkmeVerifierUpdated(event.contractId ?? "", zkmeUpd);
+      await this.recordEvent(event, "zkme_upd");
+      return;
+    }
+
+    const kycSet = parseKycSetEvent(event);
+    if (kycSet) {
+      await this.handleKycSet(event.contractId ?? "", kycSet);
+      await query(
+        `INSERT INTO indexed_events (ledger, tx_hash, contract_id, event_type, payload)
+         VALUES ($1, $2, $3, 'kyc_set', $4)
+         ON CONFLICT DO NOTHING`,
+        [
+          event.ledger ?? 0,
+          event.id ?? event.txHash ?? "",
+          event.contractId ?? "",
+          JSON.stringify({ user: kycSet.user, verified: kycSet.verified, timestamp: Number(kycSet.timestamp) }),
+        ],
+      );
+      return;
+    }
   }
 
   isRunning(): boolean {
@@ -505,6 +546,17 @@ export class Indexer {
       [vaultId, yieldDist.epoch, yieldDist.amount.toString(), totalShares],
     );
     await this.recordTvlSnapshot(contractId);
+
+    // Snapshot every active shareholder's balance for this epoch.
+    await query(
+      `INSERT INTO share_balance_snapshots (vault_id, user_address, epoch, shares, recorded_at)
+       SELECT $1, uvp.user_address, $2, uvp.shares, NOW()
+       FROM user_vault_positions uvp
+       WHERE uvp.vault_id = $1 AND uvp.shares > 0
+       ON CONFLICT (vault_id, user_address, epoch) DO NOTHING`,
+      [vaultId, yieldDist.epoch],
+    );
+
     logger.info(
       { contractId, epoch: yieldDist.epoch, amount: yieldDist.amount.toString() },
       "Processed yield_distributed event",
@@ -661,6 +713,64 @@ export class Indexer {
       { contractId, userAddress: redemptionRequest.userAddress, shares: redemptionRequest.shares.toString(), requestId: redemptionRequest.requestId },
       "Processed request_early_redemption event",
     );
+  }
+
+  private async handleOperatorAdded(
+    contractId: string,
+    ev: { operator: string; timestamp: bigint },
+  ): Promise<void> {
+    const vaultRow = await query<{ id: number }>(
+      "SELECT id FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRow.length === 0) return;
+    const vaultId = vaultRow[0].id;
+    const assignedAt = new Date(Number(ev.timestamp) * 1000);
+    await query(
+      `INSERT INTO vault_operators (vault_id, address, active, assigned_at, updated_at)
+       VALUES ($1, $2, TRUE, $3, NOW())
+       ON CONFLICT (vault_id, address) DO UPDATE SET active = TRUE, updated_at = NOW()`,
+      [vaultId, ev.operator, assignedAt],
+    );
+    logger.info({ contractId, operator: ev.operator }, "Processed op_add event");
+  }
+
+  private async handleOperatorRemoved(
+    contractId: string,
+    ev: { operator: string },
+  ): Promise<void> {
+    const vaultRow = await query<{ id: number }>(
+      "SELECT id FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultRow.length === 0) return;
+    const vaultId = vaultRow[0].id;
+    await query(
+      `UPDATE vault_operators SET active = FALSE, updated_at = NOW()
+       WHERE vault_id = $1 AND address = $2`,
+      [vaultId, ev.operator],
+    );
+    logger.info({ contractId, operator: ev.operator }, "Processed op_rem event");
+  }
+
+  private async handleZkmeVerifierUpdated(
+    contractId: string,
+    ev: { newVerifier: string },
+  ): Promise<void> {
+    await query(
+      `UPDATE vaults SET zkme_verifier_address = $1, updated_at = NOW()
+       WHERE contract_id = $2`,
+      [ev.newVerifier, contractId],
+    );
+    logger.info({ contractId, verifier: ev.newVerifier }, "Processed zkme_upd event");
+  }
+
+  private async handleKycSet(
+    contractId: string,
+    ev: { user: string; verified: boolean; timestamp: bigint },
+  ): Promise<void> {
+    await this.userService.upsertUser(ev.user, ev.verified);
+    logger.info({ contractId, user: ev.user, verified: ev.verified }, "Processed kyc_set event");
   }
 
   private async recordEvent(event: any, eventType: string): Promise<void> {
@@ -1273,6 +1383,178 @@ export function parseYieldClaimedPartialEvent(rawEvent: unknown): ParsedYieldCla
     const epoch = Number(arr[2] ?? 0);
 
     return { user, claimed, shortfall, epoch };
+  } catch {
+    return null;
+  }
+}
+
+// ── #604: parseOpAddEvent / parseOpRemEvent ────────────────────────────────────
+
+export interface ParsedOpAddEvent {
+  caller: string;
+  operator: string;
+  timestamp: bigint;
+}
+
+export function parseOpAddEvent(rawEvent: unknown): ParsedOpAddEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 3 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "op_add") return null;
+
+    const caller = String(scValToNative(parsedTopics[1]) ?? "");
+    const operator = String(scValToNative(parsedTopics[2]) ?? "");
+    const timestamp = decodeBigInt(scValToNative(parsedValue as xdr.ScVal));
+
+    return { caller, operator, timestamp };
+  } catch {
+    return null;
+  }
+}
+
+export interface ParsedOpRemEvent {
+  caller: string;
+  operator: string;
+  timestamp: bigint;
+}
+
+export function parseOpRemEvent(rawEvent: unknown): ParsedOpRemEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 3 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "op_rem") return null;
+
+    const caller = String(scValToNative(parsedTopics[1]) ?? "");
+    const operator = String(scValToNative(parsedTopics[2]) ?? "");
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+    const timestamp = decodeBigInt(arr[0]);
+
+    return { caller, operator, timestamp };
+  } catch {
+    return null;
+  }
+}
+
+// ── #616: parseZkmeVerifierUpdatedEvent ───────────────────────────────────────
+
+export interface ParsedZkmeVerifierUpdatedEvent {
+  caller: string;
+  oldVerifier: string;
+  newVerifier: string;
+}
+
+export function parseZkmeVerifierUpdatedEvent(rawEvent: unknown): ParsedZkmeVerifierUpdatedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "zkme_upd") return null;
+
+    const caller = String(scValToNative(parsedTopics[1]) ?? "");
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+    const oldVerifier = String(arr[0] ?? "");
+    const newVerifier = String(arr[1] ?? "");
+
+    return { caller, oldVerifier, newVerifier };
+  } catch {
+    return null;
+  }
+}
+
+// ── #612: parseKycSetEvent ────────────────────────────────────────────────────
+
+export interface ParsedKycSetEvent {
+  user: string;
+  verified: boolean;
+  timestamp: bigint;
+}
+
+export function parseKycSetEvent(rawEvent: unknown): ParsedKycSetEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+    const value = ev["value"] ?? ev["data"];
+
+    if (!Array.isArray(topics) || topics.length < 2 || value == null) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+    const parsedValue = typeof value === "string"
+      ? xdr.ScVal.fromXDR(value, "base64")
+      : value;
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+    if (eventName !== "kyc_set") return null;
+
+    const user = String(scValToNative(parsedTopics[1]) ?? "");
+    const data = scValToNative(parsedValue as xdr.ScVal);
+    const arr = Array.isArray(data) ? data : Object.values((data as Record<string, unknown>) ?? {});
+    const verified = Boolean(arr[0]);
+    const timestamp = decodeBigInt(arr[1] ?? 0n);
+
+    return { user, verified, timestamp };
   } catch {
     return null;
   }

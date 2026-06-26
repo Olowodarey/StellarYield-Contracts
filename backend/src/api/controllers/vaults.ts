@@ -402,3 +402,22 @@ export async function getVaultTvlHistory(req: Request, res: Response, next: Next
     next(err);
   }
 }
+
+export async function getVaultOperators(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = String(req.params["contractId"]);
+    const vaultExists = await query<{ id: number }>(
+      "SELECT id FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    if (vaultExists.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "Vault not found" });
+      return;
+    }
+    const operators = await vaultService.getVaultOperators(contractId);
+    setCacheHeaders(res);
+    res.json(operators);
+  } catch (err) {
+    next(err);
+  }
+}

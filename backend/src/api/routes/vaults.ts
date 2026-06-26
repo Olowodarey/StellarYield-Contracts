@@ -13,6 +13,7 @@ import {
   getVaultTvlHistory,
   getEarlyRedemptionFee,
   exportVaultCsv,
+  getVaultOperators,
 } from "../controllers/vaults.js";
 import { validateParams, validateQuery } from "../middleware/validate.js";
 
@@ -54,3 +55,7 @@ vaultsRouter.get(
 );
 // Export vault data as CSV: GET /api/v1/vaults/:contractId/export.csv
 vaultsRouter.get("/:contractId/export.csv", validateParams(vaultParamsSchema), exportVaultCsv);
+// Operators list: GET /api/v1/vaults/:contractId/operators
+vaultsRouter.get("/:contractId/operators", validateParams(vaultParamsSchema), getVaultOperators);
+// Vault detail: GET /api/v1/vaults/:contractId
+vaultsRouter.get("/:contractId", validateParams(vaultParamsSchema), getVault);

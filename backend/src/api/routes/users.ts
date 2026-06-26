@@ -4,6 +4,7 @@ import {
   getPortfoliosBatch,
   getUser,
   getUserKyc,
+  getUserKycHistory,
   getUserPortfolio,
   getUserYieldHistory,
   searchUsers,
@@ -41,6 +42,11 @@ const yieldHistoryQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).default(20).transform((v) => Math.min(v, 50)),
 });
 
+const kycHistoryQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).default(20).transform((v) => Math.min(v, 50)),
+});
+
 usersRouter.get("/", validateQuery(searchQuerySchema), searchUsers);
 usersRouter.post(
   "/portfolios/batch",
@@ -58,6 +64,12 @@ usersRouter.get(
   validateParams(addressParamSchema),
   validateQuery(yieldHistoryQuerySchema),
   getUserYieldHistory,
+);
+usersRouter.get(
+  "/:address/kyc-history",
+  validateParams(addressParamSchema),
+  validateQuery(kycHistoryQuerySchema),
+  getUserKycHistory,
 );
 usersRouter.get("/:address", validateParams(addressParamSchema), getUser);
 usersRouter.get(

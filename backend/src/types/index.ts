@@ -21,8 +21,15 @@ export interface Vault {
   fundingProgress: number | null;
   minDeposit: string | null;
   maxDepositPerUser: string | null;
+  zkmeVerifier: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface VaultOperator {
+  address: string;
+  active: boolean;
+  assignedAt: string;
 }
 
 export interface User {
@@ -98,4 +105,11 @@ export interface YieldHistoryEntry {
   amount: string;
   timestamp: string;
   eventType: string;
+}
+
+export interface KycHistoryEntry {
+  vaultContractId: string;
+  verified: boolean;
+  ledger: number;
+  timestamp: string;
 }

@@ -1,4 +1,4 @@
-import type { Vault, UserVaultPosition, PaginatedResponse } from "../types/index.js";
+import type { Vault, VaultOperator, UserVaultPosition, PaginatedResponse } from "../types/index.js";
 import { query } from "../db/index.js";
 import { logger } from "../logger.js";
 
@@ -25,6 +25,7 @@ interface VaultRow {
   funding_deadline: Date | null;
   min_deposit: string | null;
   max_deposit_per_user: string | null;
+  zkme_verifier_address: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -55,6 +56,7 @@ function mapVaultRow(row: VaultRow): Vault {
     fundingProgress: computeFundingProgress(row.total_assets, row.funding_target),
     minDeposit: row.min_deposit,
     maxDepositPerUser: row.max_deposit_per_user,
+    zkmeVerifier: row.zkme_verifier_address ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -79,6 +81,7 @@ export class VaultService {
       `SELECT v.id, v.contract_id, v.factory_id, v.asset, v.name, v.symbol, v.state,
               v.total_assets, v.total_supply, v.created_at, v.updated_at,
               v.funding_target, v.funding_deadline, v.min_deposit, v.max_deposit_per_user,
+              v.zkme_verifier_address,
               COALESCE((
                 SELECT COUNT(*)::int
                 FROM user_vault_positions uvp
@@ -123,6 +126,7 @@ export class VaultService {
       `SELECT v.id, v.contract_id, v.factory_id, v.asset, v.name, v.symbol, v.state,
               v.total_assets, v.total_supply, v.created_at, v.updated_at,
               v.funding_target, v.funding_deadline, v.min_deposit, v.max_deposit_per_user,
+              v.zkme_verifier_address,
               COALESCE((
                 SELECT COUNT(*)::int
                 FROM user_vault_positions uvp
@@ -142,6 +146,7 @@ export class VaultService {
       `SELECT v.id, v.contract_id, v.factory_id, v.asset, v.name, v.symbol, v.state,
               v.total_assets, v.total_supply, v.created_at, v.updated_at,
               v.funding_target, v.funding_deadline, v.min_deposit, v.max_deposit_per_user,
+              v.zkme_verifier_address,
               COALESCE((
                 SELECT COUNT(*)::int
                 FROM user_vault_positions uvp
@@ -361,6 +366,27 @@ export class VaultService {
       userAddress: row.user_address,
       shares: row.shares,
       requestTime: row.request_time,
+    }));
+  }
+
+  async getVaultOperators(contractId: string): Promise<VaultOperator[]> {
+    const rows = await query<{
+      address: string;
+      active: boolean;
+      assigned_at: Date;
+    }>(
+      `SELECT vo.address, vo.active, vo.assigned_at
+       FROM vault_operators vo
+       JOIN vaults v ON vo.vault_id = v.id
+       WHERE v.contract_id = $1
+       ORDER BY vo.assigned_at ASC`,
+      [contractId],
+    );
+
+    return rows.map((row) => ({
+      address: row.address,
+      active: row.active,
+      assignedAt: row.assigned_at.toISOString(),
     }));
   }
 }
