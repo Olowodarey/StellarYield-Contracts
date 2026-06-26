@@ -94,6 +94,50 @@ describe("Indexer", () => {
 
     expect(indexer.lastLedger).toBe(1010);
   });
+
+  it("notifies vault.matured when a vault transitions to Matured", async () => {
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const maturedIndexer = new Indexer({ notify } as any);
+
+    const event = {
+      id: "evt-matured",
+      contractId: VAULT_CONTRACT,
+      type: "contract",
+      ledger: 2000,
+      txHash: "matured-tx",
+      ledgerClosedAt: "2025-06-01T00:00:00.000Z",
+      topic: [nativeToScVal("st_chg")],
+      value: nativeToScVal({ oldState: "Active", newState: "Matured" }),
+    };
+
+    await maturedIndexer.processEvent(event);
+
+    expect(notify).toHaveBeenCalledWith("vault.matured", {
+      contractId: VAULT_CONTRACT,
+      maturedAt: "2025-06-01T00:00:00.000Z",
+    });
+  });
+
+  it("does not notify vault.matured for non-maturity state changes", async () => {
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const activeIndexer = new Indexer({ notify } as any);
+
+    const event = {
+      id: "evt-active",
+      contractId: VAULT_CONTRACT,
+      type: "contract",
+      ledger: 2001,
+      txHash: "active-tx",
+      ledgerClosedAt: "2025-06-01T00:00:00.000Z",
+      topic: [nativeToScVal("st_chg")],
+      value: nativeToScVal({ oldState: "Funding", newState: "Active" }),
+    };
+
+    await activeIndexer.processEvent(event);
+
+    const maturedCall = notify.mock.calls.find((c) => c[0] === "vault.matured");
+    expect(maturedCall).toBeUndefined();
+  });
 });
 
 // ── Standalone event parser tests ──────────────────────────────────────────────

@@ -340,11 +340,28 @@ export class Indexer {
 
     const vaultStateChanged = parseVaultStateChangedEvent(event);
     if (vaultStateChanged) {
+      await this.handleVaultStateChanged(event.contractId ?? "", vaultStateChanged);
       await this.recordEvent(event, "vault_state_changed");
       try {
         await this.notificationService?.notify("vault_state_changed", vaultStateChanged as any);
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for vault_state_changed");
+      }
+
+      // Notify subscribers when a vault reaches maturity so they can prompt
+      // users to redeem (#590).
+      if (vaultStateChanged.newState === "Matured") {
+        const maturedAt =
+          (typeof event.ledgerClosedAt === "string" && event.ledgerClosedAt) ||
+          new Date().toISOString();
+        try {
+          await this.notificationService?.notify("vault.matured", {
+            contractId: event.contractId ?? "",
+            maturedAt,
+          });
+        } catch (e) {
+          logger.warn({ err: e }, "NotificationService.notify failed for vault.matured");
+        }
       }
       return;
     }
@@ -492,6 +509,35 @@ export class Indexer {
       minDeposit: vaultCreated.minDeposit,
       maxDepositPerUser: vaultCreated.maxDepositPerUser,
     });
+  }
+
+  private async handleCancelFunding(contractId: string): Promise<void> {
+    logger.info({ contractId }, "Processing cancel_funding event");
+
+    await this.vaultService.upsertVault({
+      contractId,
+      state: "Cancelled",
+    });
+  }
+
+  /**
+   * Persist a vault state transition emitted by a `vault_state_changed` event.
+   * Updates the vault's state in the database; unknown vaults are skipped.
+   */
+  private async handleVaultStateChanged(
+    contractId: string,
+    stateChange: { oldState: string; newState: string },
+  ): Promise<void> {
+    if (!stateChange.newState) return;
+
+    await query(
+      `UPDATE vaults SET state = $1, updated_at = NOW() WHERE contract_id = $2`,
+      [stateChange.newState, contractId],
+    );
+    logger.info(
+      { contractId, oldState: stateChange.oldState, newState: stateChange.newState },
+      "Processed vault_state_changed event",
+    );
   }
 
   private async handleRequestEarlyRedemption(
@@ -838,6 +884,36 @@ export function parseVaultCreatedEvent(rawEvent: any): {
     return null;
   }
 }
+export function parseCancelFundingEvent(rawEvent: any): {
+  contractId: string;
+} | null {
+  try {
+    const parsed = parseRawEventName(rawEvent);
+    if (!parsed) return null;
+
+    const { topics } = parsed;
+
+    let eventName = "";
+    try {
+      const firstTopic = typeof topics[0] === "string"
+        ? xdr.ScVal.fromXDR(topics[0], "base64")
+        : (topics[0] as any);
+      eventName = scValToNative(firstTopic as any);
+    } catch {
+      return null;
+    }
+
+    if (eventName !== "fund_cxl" && eventName !== "funding_cancelled" && eventName !== "cancel_funding") return null;
+
+    const contractId = String(rawEvent?.contractId ?? "");
+
+    return { contractId };
+  } catch (error) {
+    logger.warn({ error }, "Error parsing cancel_funding event");
+    return null;
+  }
+}
+
 export interface ParsedRequestEarlyRedemptionEvent {
   userAddress: string;
   shares: bigint;
