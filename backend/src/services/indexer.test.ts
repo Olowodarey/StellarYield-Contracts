@@ -401,6 +401,8 @@ import {
   parseYieldClaimedEvent,
   parseYieldClaimedPartialEvent,
   parseEarlyRedemptionRequestedEvent,
+  parsePausedEvent,
+  parseUnpausedEvent,
   parseKycVerifiedEvent,
 } from "./indexer.js";
 
@@ -466,6 +468,61 @@ describe("parseEarlyRedemptionRequestedEvent", () => {
   });
 });
 
+// ── Issue #606: parsePausedEvent / parseUnpausedEvent ─────────────────────────
+
+describe("parsePausedEvent", () => {
+  it("parses a valid paused event (topic: paused)", () => {
+    const event = { ...makeMockEvent("paused", VAULT_CONTRACT) };
+    event.topic = [xdr.ScVal.scvSymbol("paused")];
+    const result = parsePausedEvent(event);
+    expect(result).not.toBeNull();
+    expect(result?.contractId).toBe(VAULT_CONTRACT);
+  });
+
+  it("parses a paused event with short topic name (v_pause)", () => {
+    const event = { ...makeMockEvent("v_pause", VAULT_CONTRACT) };
+    event.topic = [xdr.ScVal.scvSymbol("v_pause")];
+    const result = parsePausedEvent(event);
+    expect(result).not.toBeNull();
+    expect(result?.contractId).toBe(VAULT_CONTRACT);
+  });
+
+  it("returns null for unrelated event name", () => {
+    const event = makeMockEvent("deposit", VAULT_CONTRACT);
+    expect(parsePausedEvent(event)).toBeNull();
+  });
+
+  it("returns null for malformed input", () => {
+    expect(parsePausedEvent(null)).toBeNull();
+    expect(parsePausedEvent({})).toBeNull();
+  });
+});
+
+describe("parseUnpausedEvent", () => {
+  it("parses a valid unpaused event (topic: unpaused)", () => {
+    const event = { ...makeMockEvent("unpaused", VAULT_CONTRACT) };
+    event.topic = [xdr.ScVal.scvSymbol("unpaused")];
+    const result = parseUnpausedEvent(event);
+    expect(result).not.toBeNull();
+    expect(result?.contractId).toBe(VAULT_CONTRACT);
+  });
+
+  it("parses an unpaused event with short topic name (v_unpause)", () => {
+    const event = { ...makeMockEvent("v_unpause", VAULT_CONTRACT) };
+    event.topic = [xdr.ScVal.scvSymbol("v_unpause")];
+    const result = parseUnpausedEvent(event);
+    expect(result).not.toBeNull();
+    expect(result?.contractId).toBe(VAULT_CONTRACT);
+  });
+
+  it("returns null for unrelated event name", () => {
+    const event = makeMockEvent("withdraw", VAULT_CONTRACT);
+    expect(parseUnpausedEvent(event)).toBeNull();
+  });
+
+  it("returns null for malformed input", () => {
+    expect(parseUnpausedEvent(null)).toBeNull();
+    expect(parseUnpausedEvent({})).toBeNull();
 // ── Issue #611: parseKycVerifiedEvent ─────────────────────────────────────────
 
 describe("parseKycVerifiedEvent", () => {

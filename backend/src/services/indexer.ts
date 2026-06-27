@@ -464,6 +464,17 @@ export class Indexer {
       return;
     }
 
+    const paused = parsePausedEvent(event);
+    if (paused) {
+      await this.handlePauseState(event.contractId ?? "", true);
+      await this.recordEvent(event, "paused");
+      return;
+    }
+
+    const unpaused = parseUnpausedEvent(event);
+    if (unpaused) {
+      await this.handlePauseState(event.contractId ?? "", false);
+      await this.recordEvent(event, "unpaused");
     const kycUpdate = parseKycVerifiedEvent(event);
     if (kycUpdate) {
       await this.userService.upsertUser(kycUpdate.user, kycUpdate.verified);
@@ -710,6 +721,12 @@ export class Indexer {
     );
   }
 
+  private async handlePauseState(contractId: string, paused: boolean): Promise<void> {
+    await query(
+      `UPDATE vaults SET paused = $1, updated_at = NOW() WHERE contract_id = $2`,
+      [paused, contractId],
+    );
+    logger.info({ contractId, paused }, `Processed vault ${paused ? "paused" : "unpaused"} event`);
   private async handleOperatorAdded(
     contractId: string,
     event: ParsedOperatorAddedEvent,
@@ -1530,6 +1547,28 @@ export function parseYieldClaimedPartialEvent(rawEvent: unknown): ParsedYieldCla
   }
 }
 
+// ── Issue #606: parsePausedEvent / parseUnpausedEvent ─────────────────────────
+
+export interface ParsedPausedEvent {
+  contractId: string;
+}
+
+export function parsePausedEvent(rawEvent: any): ParsedPausedEvent | null {
+  try {
+    const parsed = parseRawEventName(rawEvent);
+    if (!parsed) return null;
+    const { topics } = parsed;
+    let eventName = "";
+    try {
+      const firstTopic = typeof topics[0] === "string"
+        ? xdr.ScVal.fromXDR(topics[0], "base64")
+        : (topics[0] as any);
+      eventName = scValToNative(firstTopic as any);
+    } catch {
+      return null;
+    }
+    if (eventName !== "paused" && eventName !== "v_pause") return null;
+    return { contractId: String(rawEvent?.contractId ?? "") };
 // ── Issue #593: operator events ─────────────────────────────────────────────
 
 export interface ParsedOperatorAddedEvent {
@@ -1661,6 +1700,26 @@ export function parseRoleGrantedEvent(rawEvent: unknown): ParsedRoleGrantedEvent
   }
 }
 
+export interface ParsedUnpausedEvent {
+  contractId: string;
+}
+
+export function parseUnpausedEvent(rawEvent: any): ParsedUnpausedEvent | null {
+  try {
+    const parsed = parseRawEventName(rawEvent);
+    if (!parsed) return null;
+    const { topics } = parsed;
+    let eventName = "";
+    try {
+      const firstTopic = typeof topics[0] === "string"
+        ? xdr.ScVal.fromXDR(topics[0], "base64")
+        : (topics[0] as any);
+      eventName = scValToNative(firstTopic as any);
+    } catch {
+      return null;
+    }
+    if (eventName !== "unpaused" && eventName !== "v_unpause") return null;
+    return { contractId: String(rawEvent?.contractId ?? "") };
 export interface ParsedRoleRevokedEvent {
   userAddress: string;
   role: string;
