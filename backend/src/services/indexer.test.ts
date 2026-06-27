@@ -143,6 +143,66 @@ describe("Indexer", () => {
     const maturedCall = notify.mock.calls.find((c) => c[0] === "vault.matured");
     expect(maturedCall).toBeUndefined();
   });
+
+  it("notifies vault.funded when a deposit crosses the funding target", async () => {
+    const { query } = await import("../db/index.js");
+    // Vault was at 500 assets with a 1000 target before this deposit.
+    (query as any).mockImplementation((sql: string) =>
+      sql.includes("funding_target")
+        ? Promise.resolve([{ total_assets: "500", funding_target: "1000" }])
+        : Promise.resolve([]),
+    );
+
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const fundedIndexer = new Indexer({ notify } as any);
+
+    // Deposit of 600 assets pushes total to 1100, crossing the 1000 target.
+    const event = {
+      id: "evt-funded",
+      contractId: VAULT_CONTRACT,
+      type: "contract",
+      ledger: 3000,
+      txHash: "funded-tx",
+      topic: [nativeToScVal("deposit"), nativeToScVal(ACCOUNT), nativeToScVal(ACCOUNT)],
+      value: nativeToScVal([600n, 600n]),
+    };
+
+    await fundedIndexer.processEvent(event);
+
+    expect(notify).toHaveBeenCalledWith("vault.funded", {
+      contractId: VAULT_CONTRACT,
+      totalAssets: "1100",
+      fundingTarget: "1000",
+    });
+  });
+
+  it("does not notify vault.funded on a deposit that keeps the vault above target", async () => {
+    const { query } = await import("../db/index.js");
+    // Vault is already funded (1200 >= 1000 target) before this deposit.
+    (query as any).mockImplementation((sql: string) =>
+      sql.includes("funding_target")
+        ? Promise.resolve([{ total_assets: "1200", funding_target: "1000" }])
+        : Promise.resolve([]),
+    );
+
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const fundedIndexer = new Indexer({ notify } as any);
+
+    const event = {
+      id: "evt-already-funded",
+      contractId: VAULT_CONTRACT,
+      type: "contract",
+      ledger: 3001,
+      txHash: "already-funded-tx",
+      topic: [nativeToScVal("deposit"), nativeToScVal(ACCOUNT), nativeToScVal(ACCOUNT)],
+      value: nativeToScVal([300n, 300n]),
+    };
+
+    await fundedIndexer.processEvent(event);
+
+    const fundedCall = notify.mock.calls.find((c) => c[0] === "vault.funded");
+    expect(fundedCall).toBeUndefined();
+  });
 });
 
 // ── Standalone event parser tests ──────────────────────────────────────────────
