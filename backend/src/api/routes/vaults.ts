@@ -19,10 +19,7 @@ import {
   getCompoundProjection,
   getVaultAnnualReport,
   getEpochBreakdown,
-  searchVaults,
-  checkVaultName,
-  getTrendingVaults,
-  getNewVaults,
+  listCategories,
 } from "../controllers/vaults.js";
 import { validateParams, validateQuery } from "../middleware/validate.js";
 import { requireApiKey } from "../middleware/auth.js";
@@ -33,6 +30,8 @@ const listVaultsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).default(20).transform((value) => Math.min(value, 100)),
   state: z.string().optional(),
+  category: z.string().optional(),
+  cursor: z.string().optional(),
   sort: z.enum(["created_at", "total_assets"]).default("created_at"),
   order: z.enum(["asc", "desc"]).default("desc"),
 });
@@ -67,18 +66,7 @@ const newVaultsQuerySchema = z.object({
 
 export const vaultsRouter = Router();
 
-// These static routes must be registered BEFORE /:contractId to avoid Express
-// treating them as a contractId parameter.
-
-// #640: Combined search
-vaultsRouter.get("/search", validateQuery(searchVaultsQuerySchema), searchVaults);
-// #641: Name availability check
-vaultsRouter.get("/name-check", checkVaultName);
-// #642: Trending vaults
-vaultsRouter.get("/trending", getTrendingVaults);
-// #643: New vaults
-vaultsRouter.get("/new", validateQuery(newVaultsQuerySchema), getNewVaults);
-
+vaultsRouter.get("/categories", listCategories);
 vaultsRouter.get("/", validateQuery(listVaultsQuerySchema), listVaults);
 vaultsRouter.get("/count", getVaultCount);
 vaultsRouter.get("/factory/:factoryId", validateParams(vaultFactoryParamsSchema), listVaultsByFactory);
