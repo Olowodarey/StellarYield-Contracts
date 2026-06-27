@@ -16,6 +16,7 @@ interface ListVaultsOptions {
   cursor?: string;
   sort: "created_at" | "total_assets";
   order: "asc" | "desc";
+  q?: string;
 }
 
 interface VaultRow {

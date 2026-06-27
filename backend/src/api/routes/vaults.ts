@@ -34,6 +34,7 @@ const listVaultsQuerySchema = z.object({
   cursor: z.string().optional(),
   sort: z.enum(["created_at", "total_assets"]).default("created_at"),
   order: z.enum(["asc", "desc"]).default("desc"),
+  q: z.string().optional(),
 });
 
 const vaultParamsSchema = z.object({
