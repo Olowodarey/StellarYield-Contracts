@@ -20,6 +20,19 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Parse a NUMERIC column (returned by pg as a string) into a bigint. Asset
+// amounts are stored as integers; any fractional part is truncated and
+// null/invalid values fall back to 0 so callers never throw.
+function toBigIntOrZero(value: string | null | undefined): bigint {
+  if (value == null) return 0n;
+  const integerPart = value.split(".")[0];
+  try {
+    return BigInt(integerPart || "0");
+  } catch {
+    return 0n;
+  }
+}
+
 function getEventTopics(rawEvent: any): unknown[] | null {
   const topics = rawEvent?.topic ?? rawEvent?.topics;
   return Array.isArray(topics) ? topics : null;
@@ -550,15 +563,51 @@ export class Indexer {
          updated_at = NOW()`,
       [deposit.receiver, deposit.shares.toString(), deposit.assets.toString(), contractId],
     );
+
+    // Read the funding target and the total assets prior to this deposit so we
+    // can detect when the deposit pushes the vault across its funding goal (#659).
+    const vaultRows = await query<{ total_assets: string | null; funding_target: string | null }>(
+      "SELECT total_assets, funding_target FROM vaults WHERE contract_id = $1",
+      [contractId],
+    );
+    const prevTotalAssets = toBigIntOrZero(vaultRows[0]?.total_assets);
+    const fundingTarget =
+      vaultRows[0]?.funding_target != null ? toBigIntOrZero(vaultRows[0].funding_target) : null;
+    const newTotalAssets = prevTotalAssets + deposit.assets;
+
     await query(
-      `UPDATE vaults SET total_shares_ever_minted = total_shares_ever_minted + $1 WHERE contract_id = $2`,
-      [deposit.shares.toString(), contractId],
+      `UPDATE vaults
+       SET total_assets = $1,
+           total_shares_ever_minted = total_shares_ever_minted + $2
+       WHERE contract_id = $3`,
+      [newTotalAssets.toString(), deposit.shares.toString(), contractId],
     );
     await this.recordTvlSnapshot(contractId);
     logger.info(
       { contractId, receiver: deposit.receiver, shares: deposit.shares.toString() },
       "Processed deposit event",
     );
+
+    // Fire vault.funded once, only on the deposit that crosses the threshold:
+    // previously below the target and now at or above it. Subsequent deposits
+    // that keep the vault above target leave prevTotalAssets >= target, so the
+    // event does not fire again (#659).
+    if (
+      fundingTarget != null &&
+      fundingTarget > 0n &&
+      prevTotalAssets < fundingTarget &&
+      newTotalAssets >= fundingTarget
+    ) {
+      try {
+        await this.notificationService?.notify("vault.funded", {
+          contractId,
+          totalAssets: newTotalAssets.toString(),
+          fundingTarget: fundingTarget.toString(),
+        });
+      } catch (e) {
+        logger.warn({ err: e }, "NotificationService.notify failed for vault.funded");
+      }
+    }
   }
 
   private async handleWithdraw(
