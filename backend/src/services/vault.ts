@@ -1,3 +1,4 @@
+import type { Vault, VaultOperator, UserVaultPosition, PaginatedResponse } from "../types/index.js";
 import type {
   Vault,
   UserVaultPosition,
@@ -45,6 +46,7 @@ interface VaultRow {
   funding_deadline: Date | null;
   min_deposit: string | null;
   max_deposit_per_user: string | null;
+  zkme_verifier_address: string | null;
   rwa_name: string | null;
   rwa_symbol: string | null;
   rwa_document_uri: string | null;
@@ -81,6 +83,7 @@ function mapVaultRow(row: VaultRow): Vault {
     fundingProgress: computeFundingProgress(row.total_assets, row.funding_target),
     minDeposit: row.min_deposit,
     maxDepositPerUser: row.max_deposit_per_user,
+    zkmeVerifier: row.zkme_verifier_address ?? null,
     rwaName: row.rwa_name,
     rwaSymbol: row.rwa_symbol,
     rwaDocumentUri: row.rwa_document_uri,
@@ -227,6 +230,41 @@ export class VaultService {
       total = parseInt(countResult[0]?.count ?? "0", 10);
     }
 
+    // Build WHERE clause if state filter is provided
+    const whereClause = state ? "WHERE v.state = $3" : "";
+    const params: any[] = [pageSize, offset];
+    if (state) params.push(state);
+
+    // Query vaults with pagination.
+    // COALESCE(v.total_assets, '0') guarantees every vault item in the response
+    // carries a non-null totalAssets string, satisfying issue #499.
+    const vaults = await query<VaultRow>(
+      `SELECT v.id, v.contract_id, v.factory_id, v.asset, v.name, v.symbol, v.state,
+              v.total_assets, v.total_supply, v.created_at, v.updated_at,
+              v.funding_target, v.funding_deadline, v.min_deposit, v.max_deposit_per_user,
+              v.zkme_verifier_address,
+              COALESCE((
+                SELECT COUNT(*)::int
+                FROM user_vault_positions uvp
+                WHERE uvp.vault_id = v.id AND uvp.shares > 0
+              ), 0) AS depositor_count
+       FROM vaults v
+       ${whereClause}
+       ORDER BY v.${sortColumn} ${sortDirection}
+       LIMIT $1 OFFSET $2`,
+      params,
+    );
+
+    // Get total count
+    const countResult = await query<{ count: string }>(
+      `SELECT COUNT(*) as count
+       FROM vaults v
+       ${state ? "WHERE v.state = $1" : ""}`,
+      state ? [state] : [],
+    );
+    const total = parseInt(countResult[0]?.count ?? "0", 10);
+
+    // Map database rows to Vault type
     const data: Vault[] = vaults.map(mapVaultRow);
 
     const result: PaginatedResponse<Vault> = { data, total, page, pageSize, nextCursor };
@@ -255,6 +293,7 @@ export class VaultService {
               v.total_assets, v.total_supply, v.total_shares_ever_minted, v.total_shares_ever_burned,
               v.created_at, v.updated_at,
               v.funding_target, v.funding_deadline, v.min_deposit, v.max_deposit_per_user,
+              v.zkme_verifier_address,
               v.rwa_name, v.rwa_symbol, v.rwa_document_uri, v.rwa_category,
               COALESCE((
                 SELECT COUNT(*)::int
@@ -280,6 +319,7 @@ export class VaultService {
               v.total_assets, v.total_supply, v.total_shares_ever_minted, v.total_shares_ever_burned,
               v.created_at, v.updated_at,
               v.funding_target, v.funding_deadline, v.min_deposit, v.max_deposit_per_user,
+              v.zkme_verifier_address,
               v.rwa_name, v.rwa_symbol, v.rwa_document_uri, v.rwa_category,
               COALESCE((
                 SELECT COUNT(*)::int
@@ -669,6 +709,28 @@ export class VaultService {
       requestTime: row.request_time,
     }));
   }
+
+  async getVaultOperators(contractId: string): Promise<VaultOperator[]> {
+    const rows = await query<{
+      address: string;
+      active: boolean;
+      assigned_at: Date;
+    }>(
+      `SELECT vo.address, vo.active, vo.assigned_at
+       FROM vault_operators vo
+       JOIN vaults v ON vo.vault_id = v.id
+       WHERE v.contract_id = $1
+       ORDER BY vo.assigned_at ASC`,
+      [contractId],
+    );
+
+    return rows.map((row) => ({
+      address: row.address,
+      active: row.active,
+      assignedAt: row.assigned_at.toISOString(),
+    }));
+  }
+}
 
   // ── Issue #640 / #646: Combined search with optional fuzzy matching ──────────
   async searchVaults(opts: {

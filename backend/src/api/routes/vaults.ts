@@ -16,6 +16,7 @@ import {
   getVaultTvlHistory,
   getEarlyRedemptionFee,
   exportVaultCsv,
+  getVaultOperators,
   getCompoundProjection,
   getVaultAnnualReport,
   getEpochBreakdown,
@@ -126,6 +127,10 @@ vaultsRouter.get(
 );
 // Export vault data as CSV: GET /api/v1/vaults/:contractId/export.csv
 vaultsRouter.get("/:contractId/export.csv", validateParams(vaultParamsSchema), exportVaultCsv);
+// Operators list: GET /api/v1/vaults/:contractId/operators
+vaultsRouter.get("/:contractId/operators", validateParams(vaultParamsSchema), getVaultOperators);
+// Vault detail: GET /api/v1/vaults/:contractId
+vaultsRouter.get("/:contractId", validateParams(vaultParamsSchema), getVault);
 // Annual vault performance report: GET /api/v1/vaults/:contractId/report?year=2025
 vaultsRouter.get("/:contractId/report", validateParams(vaultParamsSchema), getVaultAnnualReport);
 // Per-user yield breakdown for a specific epoch: GET /api/v1/vaults/:contractId/epochs/:epoch/breakdown

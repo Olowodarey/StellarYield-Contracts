@@ -5,6 +5,7 @@ import {
   getPortfoliosBatch,
   getUser,
   getUserKyc,
+  getUserKycHistory,
   getUserPortfolio,
   getUserShareHistory,
   getUserYieldHistory,
@@ -51,6 +52,9 @@ const yieldHistoryQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).default(20).transform((v) => Math.min(v, 50)),
 });
 
+const kycHistoryQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).default(20).transform((v) => Math.min(v, 50)),
 const shareHistoryQuerySchema = z.object({
   vaultId: z.string().length(56).regex(/^C[A-Z2-7]{55}$/).optional(),
 });
@@ -79,6 +83,10 @@ usersRouter.get(
   getUserYieldHistory,
 );
 usersRouter.get(
+  "/:address/kyc-history",
+  validateParams(addressParamSchema),
+  validateQuery(kycHistoryQuerySchema),
+  getUserKycHistory,
   "/:address/share-history",
   validateParams(addressParamSchema),
   validateQuery(shareHistoryQuerySchema),
