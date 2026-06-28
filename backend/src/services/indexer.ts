@@ -233,6 +233,13 @@ export class Indexer {
       return;
     }
 
+    // Indexer lag alert (#672) — log error when falling behind chain tip
+    const lag = latestLedger - this.lastLedger;
+    const threshold = config.indexer.lagAlertLedgers;
+    if (lag > threshold) {
+      logger.error(`Indexer lag: ${lag} ledgers behind chain tip`);
+    }
+
     if (latestLedger <= this.lastLedger) return;
 
     const from = this.lastLedger + 1;
@@ -407,6 +414,13 @@ export class Indexer {
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for vault_created");
       }
+      return;
+    }
+
+    const vaultRemoved = parseVaultRemovedEvent(event);
+    if (vaultRemoved) {
+      await this.handleVaultRemoved(event.contractId ?? "");
+      await this.recordEvent(event, "vault_removed");
       return;
     }
 
@@ -751,6 +765,19 @@ export class Indexer {
       { contractId, oldState: stateChange.oldState, newState: stateChange.newState },
       "Processed vault_state_changed event",
     );
+  }
+
+  /**
+   * Mark a vault as archived (soft-deleted) when a vault_removed event is received (#674).
+   * Updates archived = TRUE and updated_at in the database.
+   * Idempotent — setting an already-archived vault to archived is a no-op.
+   */
+  private async handleVaultRemoved(contractId: string): Promise<void> {
+    await query(
+      `UPDATE vaults SET archived = TRUE, updated_at = NOW() WHERE contract_id = $1`,
+      [contractId],
+    );
+    logger.info({ contractId }, "Processed vault_removed event — vault archived");
   }
 
   private async handleYieldClaimed(contractId: string, userAddress: string, epoch: number): Promise<void> {
@@ -1963,6 +1990,47 @@ export function parseRoleRevokedEvent(rawEvent: unknown): ParsedRoleRevokedEvent
       : String(Object.keys(nativeRole as Record<string, unknown>)[0] ?? "");
 
     return { userAddress, role };
+  } catch {
+    return null;
+  }
+}
+
+// ── Issue #674: parseVaultRemovedEvent ────────────────────────────────────────
+
+export interface ParsedVaultRemovedEvent {
+  contractId: string;
+}
+
+/**
+ * Parses a `vault_removed` or `v_rem` event emitted when a vault is removed
+ * from the factory registry. Used to soft-delete (archive) vault records (#674).
+ *
+ * Expected event shape:
+ *   topics[0]: symbol "vault_removed" or "v_rem"
+ *   contractId: vault contract address in event metadata
+ */
+export function parseVaultRemovedEvent(rawEvent: unknown): ParsedVaultRemovedEvent | null {
+  try {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const ev = rawEvent as Record<string, unknown>;
+    const topics = (ev["topic"] ?? ev["topics"]) as unknown[] | undefined;
+
+    if (!Array.isArray(topics) || topics.length < 1) return null;
+
+    const parsedTopics = topics.map((t) =>
+      typeof t === "string" ? xdr.ScVal.fromXDR(t, "base64") : (t as xdr.ScVal),
+    );
+
+    let eventName: string;
+    try {
+      eventName = String(scValToNative(parsedTopics[0]) ?? "");
+    } catch {
+      return null;
+    }
+
+    if (eventName !== "v_rem" && eventName !== "vault_removed") return null;
+
+    return { contractId: String(ev["contractId"] ?? "") };
   } catch {
     return null;
   }
