@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getAdminStats, getAdminIndexer, getAdminEvents, getVaultAudit, backfillIndexer, deleteApiKey, getApiKeys } from "../controllers/admin.js";
+import { getAdminStats, getAdminIndexer, getAdminEvents, getVaultAudit, backfillIndexer, deleteApiKey, getApiKeys, getWebhookDeliveries } from "../controllers/admin.js";
 import { requireApiKey } from "../middleware/auth.js";
 
 export const adminRouter = Router();
@@ -16,3 +16,5 @@ adminRouter.get("/vaults/:contractId/audit", getVaultAudit);
 adminRouter.get("/api-keys", getApiKeys);
 // Delete API key: DELETE /api/v1/admin/api-keys/:id
 adminRouter.delete("/api-keys/:id", deleteApiKey);
+// Webhook delivery attempts: GET /api/v1/admin/webhooks/:id/deliveries
+adminRouter.get("/webhooks/:id/deliveries", getWebhookDeliveries);
