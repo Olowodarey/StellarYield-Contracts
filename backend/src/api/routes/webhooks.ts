@@ -6,9 +6,15 @@ import { validateBody, validateParams } from "../middleware/validate.js";
 
 const KNOWN_EVENTS = [
   "deposit",
+  "withdraw",
   "yield_distributed",
   "vault_state_changed",
   "vault_created",
+  "cancel_funding",
+  "request_early_redemption",
+  "user.deposit",
+  "user.withdraw",
+  "user.early_redemption_requested",
 ] as const;
 
 const createWebhookSchema = z.object({

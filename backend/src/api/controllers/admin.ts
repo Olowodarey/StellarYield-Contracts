@@ -124,6 +124,73 @@ export async function getApiKeys(_req: Request, res: Response, next: NextFunctio
   }
 }
 
+/**
+ * GET /api/v1/admin/webhooks/:id/deliveries
+ *
+ * Returns delivery attempts for a specific webhook, ordered by most recent first.
+ * Paginated with `page` and `pageSize` (max 50).
+ * 404 if the webhook ID does not exist.
+ */
+export async function getWebhookDeliveries(req: Request, res: Response, next: NextFunction) {
+  try {
+    const webhookId = parseInt(req.params["id"] as string, 10);
+    if (isNaN(webhookId) || webhookId <= 0) {
+      res.status(400).json({ error: "BadRequest", message: "Invalid webhook ID" });
+      return;
+    }
+
+    const webhookRows = await query<{ id: number }>("SELECT id FROM webhooks WHERE id = $1", [webhookId]);
+    if (webhookRows.length === 0) {
+      res.status(404).json({ error: "NotFound", message: "Webhook not found" });
+      return;
+    }
+
+    const rawPage = parseInt(String(req.query["page"] ?? "1"), 10);
+    const page = Math.max(1, isNaN(rawPage) ? 1 : rawPage);
+    const rawPageSize = parseInt(String(req.query["pageSize"] ?? "20"), 10);
+    const pageSize = Math.max(1, Math.min(50, isNaN(rawPageSize) ? 20 : rawPageSize));
+    const offset = (page - 1) * pageSize;
+
+    const countRows = await query<{ count: string }>(
+      "SELECT COUNT(*)::text as count FROM webhook_deliveries WHERE webhook_id = $1",
+      [webhookId],
+    );
+    const total = parseInt(countRows[0]?.count ?? "0", 10);
+
+    const rows = await query<{
+      id: number;
+      attempt: number;
+      delivered_at: Date | null;
+      last_error: string | null;
+      next_retry_at: Date | null;
+      created_at: Date;
+    }>(
+      `SELECT id, attempt, delivered_at, last_error, next_retry_at, created_at
+       FROM webhook_deliveries
+       WHERE webhook_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [webhookId, pageSize, offset],
+    );
+
+    res.json({
+      data: rows.map((r) => ({
+        id: r.id,
+        attempt: r.attempt,
+        deliveredAt: r.delivered_at,
+        lastError: r.last_error,
+        nextRetryAt: r.next_retry_at,
+        createdAt: r.created_at,
+      })),
+      total,
+      page,
+      pageSize,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getAdminEvents(req: Request, res: Response, next: NextFunction) {
   try {
     const { contractId, eventType } = req.query as Record<string, string | undefined>;
