@@ -334,7 +334,19 @@ export class Indexer {
       await this.handleDeposit(event.contractId ?? "", deposit);
       await this.recordEvent(event, "deposit");
       try {
-        await this.notificationService?.notify("deposit", deposit as any);
+        const posRows = await query<{ shares: string }>(
+          "SELECT shares FROM user_vault_positions uvp JOIN vaults v ON v.id = uvp.vault_id WHERE v.contract_id = $1 AND uvp.user_address = $2",
+          [event.contractId ?? "", deposit.receiver],
+        );
+        const newShares = posRows[0]?.shares ?? "0";
+        await this.notificationService?.notify("user.deposit", {
+          contractId: event.contractId ?? "",
+          caller: deposit.caller,
+          receiver: deposit.receiver,
+          assets: deposit.assets.toString(),
+          shares: deposit.shares.toString(),
+          newShares,
+        });
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for deposit");
       }
@@ -346,7 +358,20 @@ export class Indexer {
       await this.handleWithdraw(event.contractId ?? "", withdraw);
       await this.recordEvent(event, "withdraw");
       try {
-        await this.notificationService?.notify("withdraw", withdraw as any);
+        const posRows = await query<{ shares: string }>(
+          "SELECT shares FROM user_vault_positions uvp JOIN vaults v ON v.id = uvp.vault_id WHERE v.contract_id = $1 AND uvp.user_address = $2",
+          [event.contractId ?? "", withdraw.owner],
+        );
+        const remainingShares = posRows[0]?.shares ?? "0";
+        await this.notificationService?.notify("user.withdraw", {
+          contractId: event.contractId ?? "",
+          caller: withdraw.caller,
+          receiver: withdraw.receiver,
+          owner: withdraw.owner,
+          assets: withdraw.assets.toString(),
+          shares: withdraw.shares.toString(),
+          remainingShares,
+        });
       } catch (e) {
         logger.warn({ err: e }, "NotificationService.notify failed for withdraw");
       }
@@ -457,9 +482,23 @@ export class Indexer {
       await this.handleRequestEarlyRedemption(event.contractId ?? "", redemptionRequest);
       await this.recordEvent(event, "request_early_redemption");
       try {
-        await this.notificationService?.notify("request_early_redemption", redemptionRequest as any);
+        const requestTime = new Date(Number(redemptionRequest.timestamp) * 1000);
+        const queueRows = await query<{ pos: string }>(
+          `SELECT COUNT(*)::text as pos FROM redemption_requests rr
+           JOIN vaults v ON v.id = rr.vault_id
+           WHERE v.contract_id = $1 AND rr.processed = FALSE
+           AND rr.request_time <= $2`,
+          [event.contractId ?? "", requestTime],
+        );
+        await this.notificationService?.notify("user.early_redemption_requested", {
+          contractId: event.contractId ?? "",
+          user: redemptionRequest.userAddress,
+          requestId: redemptionRequest.requestId,
+          shares: redemptionRequest.shares.toString(),
+          queuePosition: Number(queueRows[0]?.pos ?? "0"),
+        });
       } catch (e) {
-        logger.warn({ err: e }, "NotificationService.notify failed for request_early_redemption");
+        logger.warn({ err: e }, "NotificationService.notify failed for user.early_redemption_requested");
       }
       return;
     }
