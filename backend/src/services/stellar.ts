@@ -227,3 +227,12 @@ export async function readEpochData(
     timestamp: BigInt(raw.timestamp ?? raw[2] ?? 0n),
   };
 }
+
+export async function readFundingTarget(contractId: string): Promise<bigint> {
+  const value = await simulateRead<bigint>(contractId, "funding_target");
+  const result = BigInt(value);
+  if (result < 0n) {
+    throw new Error(`readFundingTarget: unexpected negative value ${result}`);
+  }
+  return result;
+}
