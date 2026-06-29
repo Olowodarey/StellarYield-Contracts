@@ -16,7 +16,14 @@ pub fn emit_vault_created(
 ) {
     e.events().publish(
         (symbol_short!("v_create"), vault),
-        (vault_type, name, creator, operator_fee_bps, maturity_date, expected_apy),
+        (
+            vault_type,
+            name,
+            creator,
+            operator_fee_bps,
+            maturity_date,
+            expected_apy,
+        ),
     );
 }
 

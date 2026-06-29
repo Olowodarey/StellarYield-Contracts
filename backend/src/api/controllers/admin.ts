@@ -279,3 +279,86 @@ export async function getVaultAudit(req: Request, res: Response, next: NextFunct
     next(err);
   }
 }
+
+/**
+ * GET /api/v1/admin/vaults/archived
+ *
+ * Returns all vaults that have been archived (soft-deleted), ordered by
+ * most recently archived first (#675).
+ *
+ * Requires: API key with admin role.
+ */
+export async function getArchivedVaults(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const { VaultService } = await import("../../services/vault.js");
+    const vaultService = new VaultService();
+    const vaults = await vaultService.listArchivedVaults();
+    res.json(vaults);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/v1/admin/consistency/total-supply
+ *
+ * Checks consistency between database total_supply and on-chain total supply
+ * for a specific vault (#673).
+ *
+ * Query params:
+ *   - contractId (required)
+ *
+ * Returns:
+ *   - dbTotalSupply: string (from database)
+ *   - chainTotalSupply: string (from on-chain contract call)
+ *   - delta: string (chainTotalSupply - dbTotalSupply)
+ *   - consistent: boolean (true only when delta === "0")
+ *
+ * All numeric values are returned as strings to avoid JSON precision loss.
+ *
+ * Requires: API key with admin role.
+ */
+export async function getTotalSupplyConsistency(req: Request, res: Response, next: NextFunction) {
+  try {
+    const contractId = req.query["contractId"] as string | undefined;
+
+    if (!contractId) {
+      res.status(400).json({ error: "Bad Request", message: "contractId query parameter is required" });
+      return;
+    }
+
+    const { VaultService } = await import("../../services/vault.js");
+    const { readTotalSupply } = await import("../../services/stellar.js");
+
+    const vaultService = new VaultService();
+    const vault = await vaultService.getVault(contractId);
+
+    if (!vault) {
+      res.status(404).json({ error: "Not Found", message: "Vault not found" });
+      return;
+    }
+
+    const dbTotalSupply = BigInt(vault.totalSupply);
+
+    let chainTotalSupply: bigint;
+    try {
+      chainTotalSupply = await readTotalSupply(contractId);
+    } catch (err) {
+      logger.error({ err, contractId }, "RPC error fetching chain total supply");
+      res.status(502).json({ error: "Bad Gateway", message: "Failed to fetch chain data" });
+      return;
+    }
+
+    const delta = chainTotalSupply - dbTotalSupply;
+    const consistent = delta === 0n;
+
+    res.json({
+      dbTotalSupply: dbTotalSupply.toString(),
+      chainTotalSupply: chainTotalSupply.toString(),
+      delta: delta.toString(),
+      consistent,
+    });
+  } catch (err) {
+    next(err);
+  }
+}

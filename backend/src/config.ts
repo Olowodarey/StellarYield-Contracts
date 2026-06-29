@@ -44,6 +44,11 @@ const envSchema = z.object({
     .default("200")
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().int().min(1)),
+  INDEXER_LAG_ALERT_LEDGERS: z
+    .string()
+    .default("100")
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().int().min(1)),
   WEBHOOK_SECRET: z
     .string()
     .default(""),
@@ -125,6 +130,7 @@ export const config = {
     startLedger: parsed.data.INDEXER_START_LEDGER,
     pollIntervalMs: parsed.data.INDEXER_POLL_INTERVAL_MS,
     batchSize: parsed.data.INDEXER_BATCH_SIZE,
+    lagAlertLedgers: parsed.data.INDEXER_LAG_ALERT_LEDGERS,
   },
 
   allowedOrigins: (() => {

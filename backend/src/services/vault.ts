@@ -128,6 +128,9 @@ export class VaultService {
       params.push(category);
     }
 
+    // Filter out archived vaults from standard list queries (#674)
+    conditions.push(`v.archived = FALSE`);
+
     if (cursorId !== null && cursorCreatedAt !== null) {
       paramIdx++;
       const cursorTs = cursorCreatedAt.toISOString();
@@ -269,14 +272,39 @@ export class VaultService {
 
   async countVaults(): Promise<number> {
     const countResult = await query<{ count: string }>(
-      "SELECT COUNT(*) as count FROM vaults",
+      "SELECT COUNT(*) as count FROM vaults WHERE archived = FALSE",
     );
     return parseInt(countResult[0]?.count ?? "0", 10);
   }
 
+  /**
+   * List archived vaults ordered by most recently archived first.
+   * Used by the admin endpoint GET /api/v1/admin/vaults/archived (#675).
+   */
+  async listArchivedVaults(): Promise<Vault[]> {
+    const rows = await query<VaultRow>(
+      `SELECT v.id, v.contract_id, v.factory_id, v.asset, v.name, v.symbol, v.state,
+              v.total_assets, v.total_supply, v.total_shares_ever_minted, v.total_shares_ever_burned,
+              v.created_at, v.updated_at,
+              v.funding_target, v.funding_deadline, v.min_deposit, v.max_deposit_per_user,
+              v.rwa_name, v.rwa_symbol, v.rwa_document_uri, v.rwa_category,
+              COALESCE((
+                SELECT COUNT(*)::int
+                FROM user_vault_positions uvp
+                WHERE uvp.vault_id = v.id AND uvp.shares > 0
+              ), 0) AS depositor_count
+       FROM vaults v
+       WHERE v.archived = TRUE
+       ORDER BY v.updated_at DESC`,
+      [],
+    );
+
+    return rows.map(mapVaultRow);
+  }
+
   async listCategories(): Promise<string[]> {
     const rows = await query<{ rwa_category: string | null }>(
-      "SELECT DISTINCT rwa_category FROM vaults WHERE rwa_category IS NOT NULL ORDER BY rwa_category ASC",
+      "SELECT DISTINCT rwa_category FROM vaults WHERE rwa_category IS NOT NULL AND archived = FALSE ORDER BY rwa_category ASC",
     );
     return rows.map((r) => r.rwa_category!);
   }
@@ -295,7 +323,7 @@ export class VaultService {
                 WHERE uvp.vault_id = v.id AND uvp.shares > 0
               ), 0) AS depositor_count
        FROM vaults v
-       WHERE v.factory_id = $1
+       WHERE v.factory_id = $1 AND v.archived = FALSE
        ORDER BY v.created_at DESC`,
       [factoryId],
     );
@@ -833,6 +861,9 @@ function extractAddressFromScVal(topic: unknown): string {
       params.push(category);
     }
 
+    // Filter out archived vaults (#674)
+    conditions.push(`v.archived = FALSE`);
+
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
     const vaults = await query<VaultRow>(
@@ -901,6 +932,7 @@ function extractAddressFromScVal(topic: unknown): string {
        JOIN vaults v ON ie.contract_id = v.contract_id
        WHERE ie.event_type = 'deposit'
          AND ie.created_at > NOW() - INTERVAL '24 hours'
+         AND v.archived = FALSE
        GROUP BY v.contract_id, v.name
        ORDER BY total_deposited DESC
        LIMIT 10`,
@@ -928,7 +960,7 @@ function extractAddressFromScVal(topic: unknown): string {
                 WHERE uvp.vault_id = v.id AND uvp.shares > 0
               ), 0) AS depositor_count
        FROM vaults v
-       WHERE v.created_at > $1
+       WHERE v.created_at > $1 AND v.archived = FALSE
        ORDER BY v.created_at DESC`,
       [cutoff],
     );
@@ -954,6 +986,7 @@ function extractAddressFromScVal(topic: unknown): string {
        WHERE v.state = 'Active'
          AND v.maturity_date > NOW()
          AND v.maturity_date <= NOW() + ($1::int * INTERVAL '1 day')
+         AND v.archived = FALSE
        ORDER BY v.maturity_date ASC`,
       [days],
     );
@@ -982,6 +1015,7 @@ function extractAddressFromScVal(topic: unknown): string {
          AND v.funding_target IS NOT NULL
          AND v.funding_target::numeric > 0
          AND v.total_assets::numeric >= v.funding_target::numeric
+         AND v.archived = FALSE
        ORDER BY (v.total_assets::numeric / v.funding_target::numeric) DESC`,
     );
 
@@ -1020,6 +1054,7 @@ function extractAddressFromScVal(topic: unknown): string {
        WHERE rwa_category = $1
          AND state = 'Active'
          AND contract_id != $2
+         AND archived = FALSE
        ORDER BY ABS(total_assets::numeric - $3::numeric) ASC
        LIMIT 5`,
       [rwa_category, contractId, total_assets],

@@ -25,13 +25,11 @@ mod tests {
         vault.deposit(&ctx.user, &10_000_000i128, &ctx.user);
 
         // Transfer immediately — should panic with SharesLocked.
-        let result = ctx
-            .env
-            .try_invoke_contract::<(), _>(&ctx.vault_id, &soroban_sdk::symbol_short!("transfer"), (
-                ctx.user.clone(),
-                user2.clone(),
-                1_000_000i128,
-            ).into_val(&ctx.env));
+        let result = ctx.env.try_invoke_contract::<(), _>(
+            &ctx.vault_id,
+            &soroban_sdk::symbol_short!("transfer"),
+            (ctx.user.clone(), user2.clone(), 1_000_000i128).into_val(&ctx.env),
+        );
         // Expect an error (SharesLocked)
         assert!(result.is_err(), "transfer should fail during lock-up");
     }
@@ -94,7 +92,9 @@ mod tests {
         vault.activate_vault(&ctx.operator);
 
         // Jump to past maturity date.
-        ctx.env.ledger().with_mut(|l| l.timestamp = 9_999_999_999u64 + 1);
+        ctx.env
+            .ledger()
+            .with_mut(|l| l.timestamp = 9_999_999_999u64 + 1);
         vault.mature_vault(&ctx.operator);
 
         // redeem_at_maturity should succeed even with active lock-up.
