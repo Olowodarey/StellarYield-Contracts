@@ -280,3 +280,21 @@ export async function readFundingTarget(contractId: string): Promise<bigint> {
   }
   return result;
 }
+
+/**
+ * Read the vault symbol (share token symbol) from the contract.
+ * Returns a string representing the share token symbol.
+ */
+export async function readVaultSymbol(contractId: string): Promise<string> {
+  const raw = await simulateRead<string | Record<string, unknown>>(contractId, "symbol");
+  return typeof raw === "string" ? raw : String(Object.values(raw)[0] ?? "");
+}
+
+/**
+ * Read the early redemption fee in basis points from the contract.
+ * Returns a number representing the fee as basis points (e.g., 100 = 1%).
+ */
+export async function readEarlyRedemptionFeeBps(contractId: string): Promise<number> {
+  const value = await simulateRead<number>(contractId, "early_redemption_fee_bps");
+  return Number(value ?? 0);
+}
